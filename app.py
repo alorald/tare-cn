@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from gmi_client import gmi_client, PRICING
-from agents import orchestrator
+from agents import orchestrator, consultation_agent, risk_agent
 
 # ---------------------------------------------------------------------------
 # 日志
@@ -58,6 +58,115 @@ progress_db: Dict[str, List[Dict[str, Any]]] = {}
 # task_id -> 订阅该任务进度的 WebSocket 集合
 ws_subscribers: Dict[str, Set[WebSocket]] = {}
 
+# 合规咨询对话历史
+compliance_chats_db: List[Dict[str, Any]] = []
+
+# 风险评估结果
+risk_assessments_db: List[Dict[str, Any]] = []
+
+# ---------------------------------------------------------------------------
+# 预置法规知识库文档（覆盖 EU / US / JP / KR 等主要跨境贸易法规）
+# ---------------------------------------------------------------------------
+
+KNOWLEDGE_DOCUMENTS: List[Dict[str, Any]] = [
+    {
+        "id": "kb-eu-vat-directive-2006-112",
+        "title": "欧盟增值税指令 Council Directive 2006/112/EC",
+        "country": "EU",
+        "category": "间接税 / VAT",
+        "summary": "欧盟增值税核心法律框架，规定成员国标准 VAT 税率不低于 15%、零税率与豁免适用范围、跨境 B2C 服务的纳税地点规则，以及 OSS/IOSS 一站式申报机制。跨境电商卖家向欧盟消费者销售商品须关注 IOSS（≤150 欧元小包）与远程销售阈值。",
+        "url": "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:02006L0112-20240101",
+    },
+    {
+        "id": "kb-eu-gpsr-2023-988",
+        "title": "欧盟通用产品安全法规 GPSR (EU) 2023/988",
+        "country": "EU",
+        "category": "产品安全",
+        "summary": "2024 年 12 月 13 日起生效，取代原 GPSD。要求所有在欧盟市场投放的消费产品（含线上电商）必须安全，制造商/进口商/远程卖家须指定欧盟授权代表、进行风险评估、事故上报并建立可追溯性。对 Temu、速卖通等中国卖家影响显著。",
+        "url": "https://eur-lex.europa.eu/eli/reg/2023/988/oj",
+    },
+    {
+        "id": "kb-eu-ce-marking-768-2008",
+        "title": "欧盟 CE 标识框架 Decision 768/2008/EC",
+        "country": "EU",
+        "category": "产品认证",
+        "summary": "CE 标识是产品进入欧盟市场的合规通行证，覆盖电子电器（LVD/EMC/RED）、玩具、机械、医疗器械、PPE 等 20 余项指令/法规。制造商须起草符合性声明（DoC）、编制技术文档，必要时由公告机构（Notified Body）参与合格评定。",
+        "url": "https://eur-lex.europa.eu/eli/dec/2008/768/oj",
+    },
+    {
+        "id": "kb-eu-epr-packaging-waste",
+        "title": "欧盟生产者责任延伸 EPR（包装与电子废弃物）",
+        "country": "EU",
+        "category": "环保合规",
+        "summary": "欧盟包装与包装废弃物指令 94/62/EC 及 WEEE 指令 2012/19/EU 要求生产者（含远程卖家）承担产品生命周期末端回收责任。亚马逊等平台已强制要求卖家提供 EPR 注册号，未注册将下架商品，主要涉及德/法/西/奥等国。",
+        "url": "https://environment.ec.europa.eu/topics/waste-and-recycling/packaging-waste_en",
+    },
+    {
+        "id": "kb-us-sales-tax-wayfair",
+        "title": "美国销售税经济联系 South Dakota v. Wayfair (2018)",
+        "country": "US",
+        "category": "间接税 / Sales Tax",
+        "summary": "美国最高法院 Wayfair 案确立经济联系（Economic Nexus）原则，远程卖家在某州销售额或交易数超过阈值（如南达科他州 10 万美元或 200 笔交易）即需注册代征销售税。亚马逊默认代收，但第三方卖家在部分州仍需自行申报。无全国统一销售税，各州税率 0%-9.5% 不等。",
+        "url": "https://www.supremecourt.gov/opinions/17pdf/17-494_j4el.pdf",
+    },
+    {
+        "id": "kb-us-cpsia-2008",
+        "title": "美国消费品安全改进法 CPSIA (H.R. 4040, 2008)",
+        "country": "US",
+        "category": "产品安全",
+        "summary": "针对 12 岁以下儿童用品的强制联邦法规，要求铅含量限值、邻苯二甲酸盐（6P）禁令、玩具标准 ASTM F963 符合性测试，并强制通过 CPSC 认可的第三方实验室出具 Children's Product Certificate (CPC)。跨境电商玩具、母婴品类高频违规，亚马逊会要求提供 CPC 否则下架。",
+        "url": "https://www.cpsc.gov/Business--Manufacturing/Business-Education/business-guidance/cpsia",
+    },
+    {
+        "id": "kb-us-fcc-part-15",
+        "title": "美国 FCC Part 15 射频设备合规",
+        "country": "US",
+        "category": "产品认证",
+        "summary": "FCC 规则第 15 部分管控所有有意/无意辐射射频能量的电子设备（含蓝牙、Wi-Fi、IoT 设备）。出口美国的无线电子产品须通过 FCC SDoC 或 Certification 认证，加贴 FCC ID。亚马逊会强制要求 FCC 合规文件，违规将面临 NAL 罚款。",
+        "url": "https://www.fcc.gov/engineering-technology/laboratory-division/general/radio-laboratory-division/topics/1486",
+    },
+    {
+        "id": "kb-jp-consumption-tax-jct",
+        "title": "日本消费税（JCT）与 invoice 制度",
+        "country": "JP",
+        "category": "间接税 / 消费税",
+        "summary": "日本消费税标准税率 10%（食品饮料 8%）。2023 年 10 月起全面实施 invoice 登记制度，注册卖家须取得合格发票发行人资格，否则买家无法抵扣进项税。跨境卖家通过亚马逊日本站销售达到基期销售额 1000 万日元阈值须注册 JCT。",
+        "url": "https://www.nta.go.jp/taxes/shiraberu/zeimokubetsu/shohi/keigenzeiritsu/invoice/index.htm",
+    },
+    {
+        "id": "kb-jp-pse-pse-denan",
+        "title": "日本 PSE 认证（电气用品安全法 DENAN）",
+        "country": "JP",
+        "category": "产品认证",
+        "summary": "日本电气用品安全法要求 116 类（特定电气用品，如电源适配器、锂电池）须通过 PSE 强制认证并由第三方认证机构（RCAB）出具证书，343 类（非特定）须自我符合性声明。所有电气用品须标注 PSE 标志、进口商名称、菱形/圆形认证标识，否则日本海关不予放行。",
+        "url": "https://www.meti.go.jp/policy/consumer/seiner/denan/",
+    },
+    {
+        "id": "kb-kr-k-reach",
+        "title": "韩国 K-REACH 化学品注册评估法 (2015)",
+        "country": "KR",
+        "category": "化学品合规",
+        "summary": "《化学品物质的注册与评估等法案》（K-REACH）要求年生产/进口量 ≥1 吨的现有化学品须向环境部注册，≥0.1 吨的现有化学品须申报。化妆品、洗剂、清洁剂等含化学成分的跨境电商产品需关注下游用途通报义务，违规可处 5 年以下徒刑或 5000 万韩元罚款。",
+        "url": "https://chem.eccer.me/chemportal/kreach.do",
+    },
+    {
+        "id": "kb-kr-kc-certification",
+        "title": "韩国 KC 认证（国家标准统一标志）",
+        "country": "KR",
+        "category": "产品认证",
+        "summary": "KC（Korea Certification）是韩国强制性国家统一认证标志，覆盖电子电器（依据《电气用品安全管理法》）、儿童用品、生活用品等。儿童用品（13 类）须由指定机构测试并签发 KC 证书。跨境电商出口韩国的母婴、玩具、电器品类高频被海关抽查 KC 证书。",
+        "url": "https://www.kats.go.kr/en/main.do",
+    },
+    {
+        "id": "kb-uk-vat-post-brexit",
+        "title": "英国脱欧后 VAT 制度（UK VAT post-Brexit）",
+        "country": "GB",
+        "category": "间接税 / VAT",
+        "summary": "2021 年 1 月 1 日脱欧后，英国 VAT 标准税率 20%。境外卖家通过在线平台向英国消费者销售 ≤135 英镑商品，由平台代收代缴 VAT；超过 135 英镑由进口商在清关时缴纳。卖家须取得英国 EORI 号与 GB VAT 注册号，否则无法清关。",
+        "url": "https://www.gov.uk/guidance/vat-and-overseas-goods-sold-directly-to-customers-in-the-uk",
+    },
+]
+
 # ---------------------------------------------------------------------------
 # Pydantic 模型
 # ---------------------------------------------------------------------------
@@ -74,6 +183,18 @@ class ReceiptParseRequest(BaseModel):
     image_base64: str = Field(..., description="票据图片 base64 字符串")
     platform: str = Field(default="amazon", description="交易平台")
     target_country: str = Field(default="US", description="目标国家")
+
+
+class ComplianceChatRequest(BaseModel):
+    query: str = Field(..., description="用户合规咨询问题")
+    target_country: str = Field(default="US")
+    product_info: Optional[str] = Field(default=None, description="产品信息描述")
+
+
+class RiskAssessmentRequest(BaseModel):
+    product_info: str = Field(..., description="产品信息")
+    target_country: str = Field(default="US")
+    platform: str = Field(default="amazon")
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +356,13 @@ async def api_docs():
             {"method": "GET", "path": "/api/tasks/{task_id}", "desc": "查询任务状态"},
             {"method": "POST", "path": "/api/receipts/parse", "desc": "直接上传票据图片进行 OCR 解析"},
             {"method": "GET", "path": "/api/reports/{task_id}", "desc": "获取生成的财税报表"},
+            {"method": "POST", "path": "/api/compliance/chat", "desc": "跨境合规咨询对话（ComplianceConsultationAgent）"},
+            {"method": "GET", "path": "/api/compliance/chat/history", "desc": "获取合规咨询对话历史"},
+            {"method": "POST", "path": "/api/compliance/risk-assess", "desc": "执行跨境合规风险评估（RiskAssessmentAgent）"},
+            {"method": "GET", "path": "/api/compliance/risk-score", "desc": "获取最新合规健康分"},
+            {"method": "GET", "path": "/api/compliance/alerts", "desc": "获取分级告警列表（red > yellow > blue）"},
+            {"method": "GET", "path": "/api/knowledge/documents", "desc": "知识库法规文档列表（EU/US/JP/KR 等）"},
+            {"method": "GET", "path": "/api/knowledge/search", "desc": "知识库搜索（按标题/摘要匹配）"},
             {"method": "GET", "path": "/api/docs", "desc": "API 文档信息（本接口）"},
             {"method": "WS", "path": "/ws", "desc": "WebSocket 实时推送任务进度（订阅 task_id）"},
         ],
@@ -267,6 +395,8 @@ async def dashboard():
             {"name": "ReceiptParserAgent", "model": "openai/gpt-4o + deepseek-ai/DeepSeek-V3.2", "status": "ready"},
             {"name": "ComplianceAgent", "model": "openai/gpt-5 + zai-org/GLM-5-FP8", "status": "ready"},
             {"name": "OrchestratorAgent", "model": "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", "status": "ready"},
+            {"name": "ComplianceConsultationAgent", "model": "zai-org/GLM-5-FP8", "status": "ready"},
+            {"name": "RiskAssessmentAgent", "model": "openai/gpt-5", "status": "ready"},
         ],
         "recent_tasks": [
             {
@@ -429,6 +559,255 @@ async def get_report(task_id: str):
             detail=f"报表尚未生成，当前任务状态: {task.get('status')}",
         )
     return report
+
+
+# ---------------------------------------------------------------------------
+# 跨境合规咨询与风险评估 API
+# ---------------------------------------------------------------------------
+
+@app.post("/api/compliance/chat")
+async def compliance_chat(request: ComplianceChatRequest):
+    """跨境合规咨询对话
+
+    调用 ComplianceConsultationAgent，返回 HS 编码、税率、
+    认证要求、合规建议与风险标记，并保存对话历史。
+    """
+    try:
+        result = await consultation_agent.consult(
+            query=request.query,
+            target_country=request.target_country,
+            product_info=request.product_info or "",
+        )
+    except Exception as exc:
+        logger.exception("合规咨询失败")
+        raise HTTPException(status_code=500, detail=f"合规咨询失败: {exc}")
+
+    chat_id = f"chat-{uuid.uuid4().hex[:12]}"
+    now = time.time()
+    record = {
+        "chat_id": chat_id,
+        "query": request.query,
+        "target_country": request.target_country,
+        "product_info": request.product_info,
+        "result": result,
+        "created_at": now,
+    }
+    compliance_chats_db.append(record)
+
+    return {
+        "chat_id": chat_id,
+        "status": "success" if not result.get("errors") else "completed_with_errors",
+        "query": request.query,
+        "target_country": request.target_country,
+        "consultation": result.get("consultation"),
+        "usage": result.get("usage"),
+        "model": result.get("model"),
+        "errors": result.get("errors", []),
+        "created_at": now,
+    }
+
+
+@app.get("/api/compliance/chat/history")
+async def compliance_chat_history(limit: int = 50):
+    """获取合规咨询对话历史（最近对话）"""
+    items = sorted(compliance_chats_db, key=lambda x: x.get("created_at", 0), reverse=True)[:limit]
+    return {
+        "total": len(compliance_chats_db),
+        "returned": len(items),
+        "history": [
+            {
+                "chat_id": x["chat_id"],
+                "query": x.get("query"),
+                "target_country": x.get("target_country"),
+                "product_info": x.get("product_info"),
+                "created_at": x.get("created_at"),
+                "errors": (x.get("result") or {}).get("errors", []),
+            }
+            for x in items
+        ],
+    }
+
+
+@app.post("/api/compliance/risk-assess")
+async def compliance_risk_assess(request: RiskAssessmentRequest):
+    """执行跨境合规风险评估
+
+    调用 RiskAssessmentAgent，返回健康分（0-100）、
+    风险等级、分级告警（red/yellow/blue）、产品扫描结果与整改建议，
+    并保存评估结果。
+    """
+    try:
+        result = await risk_agent.assess(
+            product_info=request.product_info,
+            target_country=request.target_country,
+            platform=request.platform,
+        )
+    except Exception as exc:
+        logger.exception("风险评估失败")
+        raise HTTPException(status_code=500, detail=f"风险评估失败: {exc}")
+
+    assessment_id = f"risk-{uuid.uuid4().hex[:12]}"
+    now = time.time()
+    record = {
+        "assessment_id": assessment_id,
+        "product_info": request.product_info,
+        "target_country": request.target_country,
+        "platform": request.platform,
+        "result": result,
+        "created_at": now,
+    }
+    risk_assessments_db.append(record)
+
+    return {
+        "assessment_id": assessment_id,
+        "status": "success" if not result.get("errors") else "completed_with_errors",
+        "product_info": request.product_info,
+        "target_country": request.target_country,
+        "platform": request.platform,
+        "assessment": result.get("assessment"),
+        "usage": result.get("usage"),
+        "model": result.get("model"),
+        "errors": result.get("errors", []),
+        "created_at": now,
+    }
+
+
+@app.get("/api/compliance/risk-score")
+async def compliance_risk_score():
+    """获取最新合规健康分
+
+    从 risk_assessments_db 取最新评估；若无评估，
+    返回默认值（health_score=67, risk_level=medium, alerts=空列表）。
+    """
+    if not risk_assessments_db:
+        return {
+            "has_assessment": False,
+            "health_score": 67,
+            "risk_level": "medium",
+            "alerts": [],
+            "message": "尚未执行风险评估，返回默认健康分",
+            "timestamp": time.time(),
+        }
+
+    latest = max(risk_assessments_db, key=lambda x: x.get("created_at", 0))
+    assessment = (latest.get("result") or {}).get("assessment") or {}
+    return {
+        "has_assessment": True,
+        "assessment_id": latest.get("assessment_id"),
+        "health_score": assessment.get("health_score", 0),
+        "risk_level": assessment.get("risk_level", "unknown"),
+        "alerts": assessment.get("alerts", []),
+        "target_country": latest.get("target_country"),
+        "platform": latest.get("platform"),
+        "created_at": latest.get("created_at"),
+        "timestamp": time.time(),
+    }
+
+
+@app.get("/api/compliance/alerts")
+async def compliance_alerts():
+    """获取分级告警列表
+
+    汇总所有评估中的告警，按级别排序（red > yellow > blue）。
+    """
+    level_order = {"red": 0, "yellow": 1, "blue": 2}
+
+    all_alerts: List[Dict[str, Any]] = []
+    for record in risk_assessments_db:
+        assessment = (record.get("result") or {}).get("assessment") or {}
+        for alert in assessment.get("alerts", []) or []:
+            if isinstance(alert, dict):
+                all_alerts.append({
+                    "level": alert.get("level", "blue"),
+                    "title": alert.get("title", ""),
+                    "description": alert.get("description", ""),
+                    "recommendation": alert.get("recommendation", ""),
+                    "assessment_id": record.get("assessment_id"),
+                    "target_country": record.get("target_country"),
+                    "platform": record.get("platform"),
+                    "created_at": record.get("created_at"),
+                })
+
+    all_alerts.sort(key=lambda a: (level_order.get(a["level"], 99), -(a.get("created_at") or 0)))
+
+    level_counts = {"red": 0, "yellow": 0, "blue": 0}
+    for a in all_alerts:
+        lv = a["level"]
+        if lv in level_counts:
+            level_counts[lv] += 1
+
+    return {
+        "total": len(all_alerts),
+        "by_level": level_counts,
+        "alerts": all_alerts,
+        "timestamp": time.time(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 知识库 API
+# ---------------------------------------------------------------------------
+
+@app.get("/api/knowledge/documents")
+async def knowledge_documents(country: Optional[str] = None):
+    """知识库法规文档列表
+
+    返回预置的法规知识库文档（EU/US/JP/KR 等），每个文档含
+    id / title / country / category / summary / url。
+    可通过 ?country= 过滤。
+    """
+    docs = KNOWLEDGE_DOCUMENTS
+    if country:
+        country_upper = country.upper()
+        docs = [d for d in docs if d.get("country", "").upper() == country_upper]
+    return {
+        "total": len(docs),
+        "documents": docs,
+        "timestamp": time.time(),
+    }
+
+
+@app.get("/api/knowledge/search")
+async def knowledge_search(q: str, limit: int = 20):
+    """知识库搜索
+
+    在预置知识库中搜索标题/摘要匹配的文档，返回匹配结果。
+    """
+    if not q or not q.strip():
+        return {
+            "query": q,
+            "total": 0,
+            "results": [],
+            "message": "查询参数 q 不能为空",
+        }
+
+    keyword = q.strip().lower()
+    results: List[Dict[str, Any]] = []
+    for doc in KNOWLEDGE_DOCUMENTS:
+        title = (doc.get("title") or "").lower()
+        summary = (doc.get("summary") or "").lower()
+        category = (doc.get("category") or "").lower()
+        if keyword in title or keyword in summary or keyword in category:
+            # 计算简单匹配评分：标题命中权重更高
+            score = 0
+            if keyword in title:
+                score += 3
+            if keyword in category:
+                score += 2
+            if keyword in summary:
+                score += 1
+            enriched = dict(doc)
+            enriched["score"] = score
+            results.append(enriched)
+
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+    results = results[:limit]
+    return {
+        "query": q,
+        "total": len(results),
+        "results": results,
+        "timestamp": time.time(),
+    }
 
 
 # ---------------------------------------------------------------------------

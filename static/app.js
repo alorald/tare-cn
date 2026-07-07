@@ -89,6 +89,19 @@
     taskStartTime: null,
     agentTasks: null,         // Agent 任务分布
     wsReconnect: null,
+    // 合规咨询工作台
+    complianceChatSessions: [],
+    complianceChatActiveId: null,
+    complianceChatCountry: "美国(US)",
+    complianceChatProduct: "",
+    // 风险评估
+    riskHealthScore: null,
+    riskAlerts: null,
+    riskScanResult: null,
+    // 知识库
+    knowledgeDocuments: [],
+    knowledgeFilter: "all",
+    knowledgeSearchQuery: "",
   };
 
   /* ---------- DOM 引用 ---------- */
@@ -230,6 +243,10 @@
     docs: () => api("/api/docs"),
     gmiModels: () => api("/api/gmi/models"),
     gmiStatus: () => api("/api/gmi/status"),
+    complianceChat: (body) => api("/api/compliance/chat", { method: "POST", body }),
+    riskAssess: (body) => api("/api/compliance/risk-assess", { method: "POST", body }),
+    knowledgeDocuments: () => api("/api/knowledge/documents"),
+    knowledgeSearch: (q) => api("/api/knowledge/search?q=" + encodeURIComponent(q)),
   };
 
   /* ============================================================
@@ -314,6 +331,9 @@
     agents: { title: "Agent 集群", render: renderAgents, onEnter: loadAgents },
     reports: { title: "财税报表", render: renderReports, onEnter: loadReportsList },
     gmi: { title: "GMI 监控", render: renderGMI, onEnter: loadGMI },
+    "compliance-chat": { title: "合规咨询", render: renderComplianceChat, onEnter: loadComplianceChat },
+    "risk-assessment": { title: "风险评估", render: renderRiskAssessment, onEnter: loadRiskAssessment },
+    "knowledge-base": { title: "知识库", render: renderKnowledgeBase, onEnter: loadKnowledgeBase },
     "api-docs": { title: "API 文档", render: renderApiDocs, onEnter: loadApiDocs },
   };
 
@@ -1671,6 +1691,10 @@
     { method: "GET", path: "/api/tasks", desc: "获取所有任务列表", body: null },
     { method: "POST", path: "/api/receipts/parse", desc: "单独解析票据图片，返回结构化字段与置信度", body: `{ "image": "base64_string" }` },
     { method: "GET", path: "/api/reports/{task_id}", desc: "获取指定任务的财税报表", body: null },
+    { method: "POST", path: "/api/compliance/chat", desc: "合规智能咨询对话，返回 HS 编码、税率、认证清单与合规建议", body: `{ "product": "蓝牙耳机", "country": "美国(US)", "message": "需要哪些认证？" }` },
+    { method: "POST", path: "/api/compliance/risk-assess", desc: "产品合规风险扫描，返回健康分、告警与违禁词/标签/认证检测结果", body: `{ "product_description": "蓝牙耳机", "country": "美国(US)" }` },
+    { method: "GET", path: "/api/knowledge/documents", desc: "获取法规知识库文档列表", body: null },
+    { method: "GET", path: "/api/knowledge/search", desc: "搜索法规知识库文档（参数 q=关键词）", body: null },
     { method: "GET", path: "/api/docs", desc: "获取 API 文档信息", body: null },
     { method: "WS", path: "/ws", desc: "WebSocket 推送任务进度：{ type, task_id, step, message, data }", body: null },
   ];
@@ -1760,6 +1784,816 @@ wscat -c ${CONFIG.WS_BASE}/ws?task_id={task_id}`;
   }
 
   /* ============================================================
+     页面 7 — 合规咨询工作台
+     ============================================================ */
+  const COMPLIANCE_COUNTRIES = [
+    "美国(US)", "欧盟(EU)", "英国(GB)", "德国(DE)", "法国(FR)",
+    "日本(JP)", "韩国(KR)", "新加坡(SG)", "澳大利亚(AU)", "加拿大(CA)",
+    "意大利(IT)", "西班牙(ES)",
+  ];
+
+  function renderComplianceChat() {
+    app.innerHTML = `
+      <div class="page" id="page-compliance-chat">
+        <div class="chat-layout">
+          <aside class="chat-sidebar">
+            <div class="chat-sidebar-head">
+              ${iconChat()} <span>对话历史</span>
+              <button class="btn btn-ghost chat-new-btn" id="chat-new-session">+ 新建</button>
+            </div>
+            <div class="chat-session-list" id="chat-session-list">
+              <div class="skeleton sk-line"></div>
+              <div class="skeleton sk-line"></div>
+              <div class="skeleton sk-line"></div>
+            </div>
+          </aside>
+          <div class="chat-main">
+            <div class="chat-topbar">
+              <select class="form-control chat-country-select" id="chat-country">
+                ${COMPLIANCE_COUNTRIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+              </select>
+              <input class="form-control" id="chat-product" placeholder="输入产品名称/描述，如：蓝牙耳机、LED灯带" />
+            </div>
+            <div class="chat-messages" id="chat-messages">
+              <div class="chat-empty">
+                <div class="chat-empty-icon">${iconChat()}</div>
+                <div class="chat-empty-title">合规智能咨询</div>
+                <div class="chat-empty-desc">输入产品和目标国家，AI 将为您提供 HS 编码、税率、认证清单和合规建议</div>
+              </div>
+            </div>
+            <div class="chat-input-area">
+              <textarea class="form-control" id="chat-input" placeholder="输入你的合规问题，如：该产品出口到目标国家需要哪些认证？税率是多少？" rows="1"></textarea>
+              <button class="btn btn-primary" id="chat-send">${iconBolt(18)} 发送</button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+
+    const countrySel = $("#chat-country");
+    if (countrySel) countrySel.value = state.complianceChatCountry;
+    const productInput = $("#chat-product");
+    if (productInput) productInput.value = state.complianceChatProduct;
+
+    bindChatEvents();
+  }
+
+  function bindChatEvents() {
+    const sendBtn = $("#chat-send");
+    const input = $("#chat-input");
+    const countrySel = $("#chat-country");
+    const productInput = $("#chat-product");
+    const newBtn = $("#chat-new-session");
+
+    if (sendBtn) sendBtn.addEventListener("click", sendChatMessage);
+    if (input) {
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendChatMessage();
+        }
+      });
+      input.addEventListener("input", () => {
+        input.style.height = "auto";
+        input.style.height = Math.min(input.scrollHeight, 120) + "px";
+      });
+    }
+    if (countrySel) {
+      countrySel.addEventListener("change", () => {
+        state.complianceChatCountry = countrySel.value;
+      });
+    }
+    if (productInput) {
+      productInput.addEventListener("input", () => {
+        state.complianceChatProduct = productInput.value;
+      });
+    }
+    if (newBtn) {
+      newBtn.addEventListener("click", () => {
+        const id = "session-" + Date.now().toString(36);
+        state.complianceChatSessions.unshift({
+          id, title: "新对话", country: state.complianceChatCountry,
+          product: state.complianceChatProduct, time: fmtTime(Date.now()),
+          messages: [],
+        });
+        state.complianceChatActiveId = id;
+        renderChatSessionList();
+        renderChatMessages();
+      });
+    }
+  }
+
+  function renderChatSessionList() {
+    const el = $("#chat-session-list");
+    if (!el) return;
+    const sessions = state.complianceChatSessions;
+    if (!sessions.length) {
+      el.innerHTML = `<div class="text-dim text-sm" style="padding:14px;text-align:center">暂无对话历史</div>`;
+      return;
+    }
+    el.innerHTML = sessions.map((s) => `
+      <div class="chat-session-item ${s.id === state.complianceChatActiveId ? "active" : ""}" data-id="${esc(s.id)}">
+        <div class="chat-session-title">${esc(s.title)}</div>
+        <div class="chat-session-meta">${esc(s.country)} · ${esc(s.time)}</div>
+      </div>`).join("");
+    $$(".chat-session-item", el).forEach((item) => {
+      item.addEventListener("click", () => {
+        state.complianceChatActiveId = item.dataset.id;
+        const session = sessions.find((s) => s.id === item.dataset.id);
+        if (session) {
+          state.complianceChatCountry = session.country;
+          state.complianceChatProduct = session.product;
+          const countrySel = $("#chat-country");
+          if (countrySel) countrySel.value = session.country;
+          const productInput = $("#chat-product");
+          if (productInput) productInput.value = session.product;
+        }
+        renderChatSessionList();
+        renderChatMessages();
+      });
+    });
+  }
+
+  function renderChatMessages() {
+    const el = $("#chat-messages");
+    if (!el) return;
+    const session = state.complianceChatSessions.find((s) => s.id === state.complianceChatActiveId);
+    if (!session || !session.messages.length) {
+      el.innerHTML = `
+        <div class="chat-empty">
+          <div class="chat-empty-icon">${iconChat()}</div>
+          <div class="chat-empty-title">合规智能咨询</div>
+          <div class="chat-empty-desc">输入产品和目标国家，AI 将为您提供 HS 编码、税率、认证清单和合规建议</div>
+        </div>`;
+      return;
+    }
+    el.innerHTML = session.messages.map((m) => {
+      if (m.role === "user") {
+        return `<div class="chat-bubble user">${esc(m.content)}</div>`;
+      }
+      return `
+        <div class="chat-bubble ai">
+          <div class="chat-bubble-role">ASTRA 合规智能体</div>
+          <div>${esc(m.content)}</div>
+          ${m.result ? renderComplianceResultCard(m.result) : ""}
+        </div>`;
+    }).join("");
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function renderComplianceResultCard(r) {
+    const result = r || {};
+    return `
+      <div class="compliance-result-card">
+        <div class="compliance-result-grid">
+          <div class="compliance-field">
+            <div class="compliance-field-label">HS 编码</div>
+            <div class="compliance-field-value text-mono">${esc(result.hs_code || "-")}</div>
+          </div>
+          <div class="compliance-field">
+            <div class="compliance-field-label">关税税率</div>
+            <div class="compliance-field-value" style="color:var(--accent-2)">${esc(result.tariff_rate || "-")}</div>
+          </div>
+        </div>
+        ${result.certifications && result.certifications.length ? `
+          <div class="compliance-field-label" style="margin-bottom:6px">认证清单</div>
+          <div class="cert-list">
+            ${result.certifications.map((c) => `<span class="cert-tag">${esc(c)}</span>`).join("")}
+          </div>` : ""}
+        ${result.advice ? `
+          <div class="compliance-field-label" style="margin:10px 0 4px">合规建议</div>
+          <div class="compliance-advice">${esc(result.advice)}</div>` : ""}
+      </div>`;
+  }
+
+  function getActiveChatSession() {
+    let session = state.complianceChatSessions.find((s) => s.id === state.complianceChatActiveId);
+    if (!session) {
+      const id = "session-" + Date.now().toString(36);
+      session = {
+        id, title: "新对话", country: state.complianceChatCountry,
+        product: state.complianceChatProduct, time: fmtTime(Date.now()),
+        messages: [],
+      };
+      state.complianceChatSessions.unshift(session);
+      state.complianceChatActiveId = id;
+      renderChatSessionList();
+    }
+    return session;
+  }
+
+  async function sendChatMessage() {
+    const input = $("#chat-input");
+    if (!input) return;
+    const text = input.value.trim();
+    if (!text) return;
+
+    const product = state.complianceChatProduct || "未指定产品";
+    const country = state.complianceChatCountry;
+    const session = getActiveChatSession();
+
+    session.messages.push({ role: "user", content: text });
+    if (session.messages.length === 1) {
+      session.title = (product + " → " + country).substring(0, 30);
+    }
+    input.value = "";
+    input.style.height = "auto";
+    renderChatSessionList();
+    renderChatMessages();
+
+    // typing indicator
+    const msgEl = $("#chat-messages");
+    if (msgEl) {
+      const typing = document.createElement("div");
+      typing.className = "chat-bubble ai";
+      typing.id = "chat-typing";
+      typing.innerHTML = `<div class="chat-bubble-role">ASTRA 合规智能体</div><div class="chat-typing-dots"><span></span><span></span><span></span></div>`;
+      msgEl.appendChild(typing);
+      msgEl.scrollTop = msgEl.scrollHeight;
+    }
+
+    try {
+      let resp;
+      if (CONFIG.DEMO_MODE) {
+        await sleep(800 + Math.random() * 600);
+        resp = demoComplianceResponse(product, country, text);
+      } else {
+        resp = await API.complianceChat({ query: text, target_country: country, product_info: product });
+      }
+      const typingEl = $("#chat-typing");
+      if (typingEl) typingEl.remove();
+      session.messages.push({
+        role: "ai",
+        content: resp.content || resp.message || "分析完成",
+        result: resp.result || (resp.hs_code ? resp : null),
+      });
+      renderChatMessages();
+    } catch (e) {
+      const typingEl = $("#chat-typing");
+      if (typingEl) typingEl.remove();
+      if (isConnectionError(e)) {
+        toast("warn", "后端未连接", "使用演示数据回复");
+        const resp = demoComplianceResponse(product, country, text);
+        session.messages.push({ role: "ai", content: resp.content, result: resp.result });
+        renderChatMessages();
+      } else {
+        toast("error", "查询失败", e.message);
+        session.messages.push({ role: "ai", content: "抱歉，查询过程中出现错误：" + e.message });
+        renderChatMessages();
+      }
+    }
+  }
+
+  async function loadComplianceChat() {
+    if (CONFIG.DEMO_MODE) {
+      if (state.complianceChatSessions.length === 0) {
+        state.complianceChatSessions = demoComplianceSessions();
+        state.complianceChatActiveId = state.complianceChatSessions[0].id;
+        state.complianceChatCountry = state.complianceChatSessions[0].country;
+        state.complianceChatProduct = state.complianceChatSessions[0].product;
+        const countrySel = $("#chat-country");
+        if (countrySel) countrySel.value = state.complianceChatCountry;
+        const productInput = $("#chat-product");
+        if (productInput) productInput.value = state.complianceChatProduct;
+      }
+      renderChatSessionList();
+      renderChatMessages();
+      setConnStatus("offline", "GitHub Pages · 演示模式");
+      return;
+    }
+    if (state.complianceChatSessions.length === 0) {
+      const id = "session-" + Date.now().toString(36);
+      state.complianceChatSessions = [{
+        id, title: "新对话", country: state.complianceChatCountry,
+        product: state.complianceChatProduct, time: fmtTime(Date.now()),
+        messages: [],
+      }];
+      state.complianceChatActiveId = id;
+    }
+    renderChatSessionList();
+    renderChatMessages();
+    setConnStatus("online", "已连接后端");
+  }
+
+  function demoComplianceSessions() {
+    return [
+      {
+        id: "demo-chat-1",
+        title: "蓝牙耳机 → 美国(US)",
+        country: "美国(US)",
+        product: "蓝牙耳机",
+        time: "2025-07-07 14:23",
+        messages: [
+          { role: "user", content: "蓝牙耳机出口到美国需要哪些认证？关税税率是多少？" },
+          { role: "ai", content: "根据您查询的「蓝牙耳机」出口到美国的合规要求，已完成分析：", result: {
+            hs_code: "8518.30.20.00",
+            tariff_rate: "4.9% (MFN)",
+            certifications: ["FCC ID", "FDA 注册", "UL 认证", "BT BQB"],
+            advice: "蓝牙耳机属无线通信设备，必须通过 FCC Part 15B/C/E 认证并获得 FCC ID。建议同时完成 FDA 设备注册和蓝牙 BQB 认证。关税方面适用 MFN 税率 4.9%，若原产地为中国需关注 Section 301 加征关税清单。"
+          }},
+          { role: "user", content: "产品包装标签有什么具体要求？" },
+          { role: "ai", content: "美国对电子产品包装标签有以下要求：\n1. 必须标注制造商名称和地址\n2. 包含 FCC ID 和合规声明\n3. 原产地标识 (Made in China)\n4. 警告语使用英语\n5. 条形码 (UPC/EAN)\n\n建议在出货前由第三方验货机构确认标签合规性。", result: null },
+        ],
+      },
+      {
+        id: "demo-chat-2",
+        title: "LED灯带 → 德国(DE)",
+        country: "德国(DE)",
+        product: "LED灯带",
+        time: "2025-07-06 10:15",
+        messages: [
+          { role: "user", content: "LED灯带出口德国需要做CE认证吗？具体包含哪些指令？" },
+          { role: "ai", content: "LED灯带出口到德国（欧盟）必须通过CE认证，以下是详细分析：", result: {
+            hs_code: "9405.42.99.00",
+            tariff_rate: "4.0% (MFN)",
+            certifications: ["CE-LVD", "CE-EMC", "CE-RED", "RoHS", "REACH", "WEEE"],
+            advice: "LED灯带需同时满足低电压指令(LVD 2014/35/EU)、电磁兼容指令(EMC 2014/30/EU)和能效指令。内置无线控制模块还需满足RED指令。此外必须符合RoHS有害物质限制和REACH法规。德国市场还需注册WEEE电子废弃物回收。"
+          }},
+        ],
+      },
+      {
+        id: "demo-chat-3",
+        title: "食品容器 → 日本(JP)",
+        country: "日本(JP)",
+        product: "食品容器",
+        time: "2025-07-05 16:42",
+        messages: [
+          { role: "user", content: "食品级塑料容器出口日本有什么检测要求？" },
+          { role: "ai", content: "食品容器出口日本需符合日本食品卫生法要求，分析如下：", result: {
+            hs_code: "3924.10.00.00",
+            tariff_rate: "3.9% (MFN)",
+            certifications: ["食品卫生法检测", "厚生劳动省登记", "JFSL 标签"],
+            advice: "食品级塑料容器必须通过日本食品卫生法规定的迁移量测试（重金属、甲醛、蒸发残留物等）。需在厚生劳动省指定的检测机构完成测试。产品标签须符合JFSL食品标签法要求，包含材质标识、耐热温度等信息。建议选择已有出口日本经验的检测机构协助。"
+          }},
+        ],
+      },
+    ];
+  }
+
+  function demoComplianceResponse(product, country, message) {
+    const responses = [
+      {
+        content: "关于「" + product + "」出口到" + country + "的合规要求，已完成分析：",
+        result: {
+          hs_code: "8518.30.20.00",
+          tariff_rate: "4.9% (MFN)",
+          certifications: ["FCC ID", "FDA 注册", "UL 认证"],
+          advice: "建议在出口前完成相关认证申请，确保产品包装包含合规标签。" + country + "海关对进口商品实行较为严格的入境检查，建议提前准备完整的认证文件和原产地证明。"
+        }
+      },
+      {
+        content: "根据最新法规数据库查询，「" + product + "」出口" + country + "的合规分析如下：",
+        result: {
+          hs_code: "9405.42.99.00",
+          tariff_rate: "4.0% (MFN)",
+          certifications: ["CE 认证", "RoHS", "REACH"],
+          advice: country + "对该类产品有严格的认证要求，建议提前3-6个月启动认证流程。同时关注关税优惠政策，如适用自贸协定可降低关税成本。"
+        }
+      },
+    ];
+    return responses[Math.floor(Math.random() * responses.length)];
+  }
+
+  /* ============================================================
+     页面 8 — 风险评估面板
+     ============================================================ */
+  function renderRiskAssessment() {
+    app.innerHTML = `
+      <div class="page" id="page-risk-assessment">
+        <div class="grid grid-2 mb-20">
+          <div class="card" id="risk-gauge-card">
+            <div class="card-title">${iconShield()} 合规健康分</div>
+            <div class="gauge-container">
+              <canvas class="gauge-canvas" id="risk-gauge"></canvas>
+            </div>
+            <div class="gauge-legend">
+              <div class="gauge-legend-item"><span class="gauge-legend-dot" style="background:#ef4444"></span>高风险 (0-40)</div>
+              <div class="gauge-legend-item"><span class="gauge-legend-dot" style="background:#f59e0b"></span>中等风险 (40-70)</div>
+              <div class="gauge-legend-item"><span class="gauge-legend-dot" style="background:#10b981"></span>低风险 (70-100)</div>
+            </div>
+          </div>
+          <div class="card" id="risk-scan-card">
+            <div class="card-title">${iconShield()} 产品合规扫描</div>
+            <div class="form-group">
+              <label class="form-label">产品名称/描述</label>
+              <input class="form-control" id="risk-scan-product" placeholder="如：蓝牙耳机、LED灯带、食品容器" />
+            </div>
+            <div class="form-group">
+              <label class="form-label">目标国家</label>
+              <select class="form-control" id="risk-scan-country">
+                ${COMPLIANCE_COUNTRIES.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
+              </select>
+            </div>
+            <button class="btn btn-primary btn-block" id="risk-scan-btn">${iconBolt(18)} 开始扫描</button>
+            <div id="risk-scan-result" class="scan-result"></div>
+          </div>
+        </div>
+        <div class="card" id="risk-alerts-card">
+          <div class="card-title">${iconAlert()} 分级告警</div>
+          <div class="alert-list" id="risk-alerts">
+            <div class="skeleton sk-line"></div>
+            <div class="skeleton sk-line"></div>
+            <div class="skeleton sk-line"></div>
+          </div>
+        </div>
+      </div>`;
+
+    const scanBtn = $("#risk-scan-btn");
+    if (scanBtn) scanBtn.addEventListener("click", performRiskScan);
+  }
+
+  async function loadRiskAssessment() {
+    if (CONFIG.DEMO_MODE) {
+      const demo = demoRiskData();
+      state.riskHealthScore = demo.health_score;
+      state.riskAlerts = demo.alerts;
+      renderRiskGauge(demo.health_score);
+      renderRiskAlerts(demo.alerts);
+      setConnStatus("offline", "GitHub Pages · 演示模式");
+      return;
+    }
+    try {
+      const data = await API.riskAssess({ action: "status" });
+      state.riskHealthScore = data.health_score || 0;
+      state.riskAlerts = data.alerts || [];
+      renderRiskGauge(state.riskHealthScore);
+      renderRiskAlerts(state.riskAlerts);
+      setConnStatus("online", "已连接后端");
+    } catch (e) {
+      if (isConnectionError(e)) {
+        setConnStatus("offline", "后端未连接");
+        const demo = demoRiskData();
+        state.riskHealthScore = demo.health_score;
+        state.riskAlerts = demo.alerts;
+        renderRiskGauge(demo.health_score);
+        renderRiskAlerts(demo.alerts);
+        toast("warn", "使用演示数据", "后端未连接，已加载演示风险数据");
+      } else {
+        toast("error", "加载失败", e.message);
+      }
+    }
+  }
+
+  function renderRiskGauge(targetScore) {
+    const canvas = $("#risk-gauge");
+    if (!canvas) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = 300;
+    const cssH = 175;
+    canvas.width = cssW * dpr;
+    canvas.height = cssH * dpr;
+    canvas.style.width = cssW + "px";
+    canvas.style.height = cssH + "px";
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+
+    const cx = cssW / 2;
+    const cy = cssH - 15;
+    const radius = Math.min(cssW / 2 - 25, cssH - 35);
+    const lineWidth = 18;
+
+    function getColor(score) {
+      if (score < 40) return "#ef4444";
+      if (score < 70) return "#f59e0b";
+      return "#10b981";
+    }
+
+    function getLevel(score) {
+      if (score < 40) return { text: "高风险", color: "#ef4444" };
+      if (score < 70) return { text: "中等风险", color: "#f59e0b" };
+      return { text: "低风险", color: "#10b981" };
+    }
+
+    function draw(score) {
+      ctx.clearRect(0, 0, cssW, cssH);
+
+      // background arc
+      ctx.beginPath();
+      ctx.arc(cx, cy, radius, Math.PI, 0, false);
+      ctx.strokeStyle = "#283649";
+      ctx.lineWidth = lineWidth;
+      ctx.lineCap = "round";
+      ctx.stroke();
+
+      // foreground arc
+      if (score > 0) {
+        const angle = Math.PI + (score / 100) * Math.PI;
+        ctx.beginPath();
+        ctx.arc(cx, cy, radius, Math.PI, angle, false);
+        ctx.strokeStyle = getColor(score);
+        ctx.lineWidth = lineWidth;
+        ctx.lineCap = "round";
+        ctx.stroke();
+      }
+
+      // score number
+      ctx.fillStyle = "#e2e8f0";
+      ctx.font = "bold 38px 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(Math.round(score), cx, cy - radius + 25);
+
+      // level text
+      const level = getLevel(score);
+      ctx.fillStyle = level.color;
+      ctx.font = "bold 13px 'Segoe UI', sans-serif";
+      ctx.fillText(level.text, cx, cy - radius + 55);
+
+      // min/max labels
+      ctx.fillStyle = "#64748b";
+      ctx.font = "11px 'Segoe UI', sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("0", cx - radius + 5, cy + 5);
+      ctx.textAlign = "right";
+      ctx.fillText("100", cx + radius - 5, cy + 5);
+    }
+
+    // animate
+    const duration = 1000;
+    const startTime = performance.now();
+    function animate(now) {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      draw(targetScore * eased);
+      if (progress < 1) requestAnimationFrame(animate);
+    }
+    requestAnimationFrame(animate);
+  }
+
+  function renderRiskAlerts(alerts) {
+    const el = $("#risk-alerts");
+    if (!el) return;
+    if (!alerts || !alerts.length) {
+      el.innerHTML = `<div class="empty-state"><div class="es-title">暂无告警</div><div class="es-desc">当前合规状态良好</div></div>`;
+      return;
+    }
+    const icons = {
+      critical: iconAlertDanger(),
+      warning: iconAlertWarn(),
+      info: iconAlertInfo(),
+    };
+    el.innerHTML = alerts.map((a) => `
+      <div class="alert-item ${esc(a.level)}">
+        <div class="alert-icon">${icons[a.level] || icons.info}</div>
+        <div class="alert-body">
+          <div class="alert-title">${esc(a.title)}</div>
+          <div class="alert-desc">${esc(a.desc)}</div>
+          ${a.suggestion ? `<div class="alert-suggestion">${esc(a.suggestion)}</div>` : ""}
+        </div>
+      </div>`).join("");
+  }
+
+  async function performRiskScan() {
+    const btn = $("#risk-scan-btn");
+    const productInput = $("#risk-scan-product");
+    const countrySel = $("#risk-scan-country");
+    const resultEl = $("#risk-scan-result");
+    if (!btn || !productInput || !resultEl) return;
+
+    const product = productInput.value.trim();
+    const country = countrySel ? countrySel.value : "美国(US)";
+    if (!product) {
+      toast("warn", "请输入产品信息", "产品名称/描述不能为空");
+      return;
+    }
+
+    btn.disabled = true;
+    btn.innerHTML = iconLoader() + " 扫描中…";
+    resultEl.innerHTML = `<div class="skeleton sk-block" style="height:80px"></div>`;
+
+    try {
+      let result;
+      if (CONFIG.DEMO_MODE) {
+        await sleep(1000 + Math.random() * 500);
+        result = demoRiskScanResult(product, country);
+      } else {
+        result = await API.riskAssess({ product_description: product, country: country });
+      }
+      state.riskScanResult = result;
+      renderRiskScanResult(result);
+    } catch (e) {
+      if (isConnectionError(e)) {
+        toast("warn", "后端未连接", "使用演示数据展示扫描结果");
+        const result = demoRiskScanResult(product, country);
+        state.riskScanResult = result;
+        renderRiskScanResult(result);
+      } else {
+        resultEl.innerHTML = `<div class="empty-state"><div class="es-title">扫描失败</div><div class="es-desc">${esc(e.message)}</div></div>`;
+      }
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = iconBolt(18) + " 开始扫描";
+    }
+  }
+
+  function renderRiskScanResult(r) {
+    const el = $("#risk-scan-result");
+    if (!el) return;
+    const scan = r.scan_result || r;
+    el.innerHTML = `
+      <div class="scan-result-item">
+        <div class="scan-result-head">
+          <span class="scan-result-title">违禁词检测</span>
+          ${scan.forbidden_words && scan.forbidden_words.length ?
+            `<span class="badge red">${scan.forbidden_words.length} 个风险词</span>` :
+            `<span class="badge green">无风险</span>`}
+        </div>
+        ${scan.forbidden_words && scan.forbidden_words.length ?
+          `<div class="scan-result-list">${scan.forbidden_words.map((w) => `<span class="scan-tag danger">${esc(w)}</span>`).join("")}</div>` :
+          `<div class="scan-result-list text-mute">未检测到违禁词</div>`}
+      </div>
+      <div class="scan-result-item">
+        <div class="scan-result-head">
+          <span class="scan-result-title">标签问题</span>
+          ${scan.label_issues && scan.label_issues.length ?
+            `<span class="badge amber">${scan.label_issues.length} 项问题</span>` :
+            `<span class="badge green">无问题</span>`}
+        </div>
+        ${scan.label_issues && scan.label_issues.length ?
+          `<div class="scan-result-list">${scan.label_issues.map((w) => `<span class="scan-tag warn">${esc(w)}</span>`).join("")}</div>` :
+          `<div class="scan-result-list text-mute">标签信息合规</div>`}
+      </div>
+      <div class="scan-result-item">
+        <div class="scan-result-head">
+          <span class="scan-result-title">认证缺失</span>
+          ${scan.missing_certs && scan.missing_certs.length ?
+            `<span class="badge red">${scan.missing_certs.length} 项缺失</span>` :
+            `<span class="badge green">认证齐全</span>`}
+        </div>
+        ${scan.missing_certs && scan.missing_certs.length ?
+          `<div class="scan-result-list">${scan.missing_certs.map((w) => `<span class="scan-tag danger">${esc(w)}</span>`).join("")}</div>` :
+          `<div class="scan-result-list text-mute">所需认证均已具备</div>`}
+      </div>`;
+  }
+
+  function demoRiskData() {
+    return {
+      health_score: 67,
+      alerts: [
+        { level: "critical", title: "产品缺少强制性 FCC 认证", desc: "蓝牙耳机出口美国必须通过 FCC 认证，当前产品资料中未检测到有效 FCC ID 证书。", suggestion: "立即联系 FCC 认可实验室（如 TUV、SGS）完成 EMC 测试并申请 FCC ID，预计周期 4-6 周。" },
+        { level: "warning", title: "产品标签未包含制造商地址", desc: "美国 FTC 规定消费产品标签需标注制造商名称和完整地址，当前标签信息不完整。", suggestion: "更新产品包装及说明书标签，补充制造商完整地址、联系电话等必要信息。" },
+        { level: "info", title: "建议补充 UL 安全认证", desc: "虽然 UL 认证对蓝牙耳机非强制要求，但有助于提升消费者信任度和亚马逊平台搜索排名。", suggestion: "考虑申请 UL 60950-1 或 UL 62368-1 安全认证以增强产品竞争力。" },
+      ],
+    };
+  }
+
+  function demoRiskScanResult(product, country) {
+    return {
+      scan_result: {
+        forbidden_words: ["best", "100% safe", "cure", "guaranteed"],
+        label_issues: ["缺少原产地标识", "未标注制造商地址", "警告语字体过小"],
+        missing_certs: ["FCC ID", "FDA 注册", "BQB 认证"],
+      },
+    };
+  }
+
+  /* ============================================================
+     页面 9 — 知识库
+     ============================================================ */
+  const KB_FILTERS = [
+    { id: "all", label: "全部" },
+    { id: "EU", label: "欧盟" },
+    { id: "US", label: "美国" },
+    { id: "JP", label: "日本" },
+    { id: "KR", label: "韩国" },
+    { id: "Global", label: "全球" },
+  ];
+
+  function renderKnowledgeBase() {
+    app.innerHTML = `
+      <div class="page" id="page-knowledge-base">
+        <div class="kb-search-bar">
+          <input class="form-control" id="kb-search-input" placeholder="搜索法规文档关键词，如：CE认证、FCC、关税" value="${esc(state.knowledgeSearchQuery)}" />
+          <button class="btn btn-primary" id="kb-search-btn">${iconSearch()} 搜索</button>
+        </div>
+        <div class="kb-filter-chips">
+          ${KB_FILTERS.map((f) => `<button class="chip ${f.id === state.knowledgeFilter ? "active" : ""}" data-filter="${esc(f.id)}">${esc(f.label)}</button>`).join("")}
+        </div>
+        <div class="kb-doc-grid" id="kb-doc-grid">
+          ${[0,1,2,3,4,5].map(() => `<div class="card"><div class="skeleton sk-line"></div><div class="skeleton sk-line" style="height:18px"></div><div class="skeleton sk-block"></div></div>`).join("")}
+        </div>
+      </div>`;
+
+    const searchInput = $("#kb-search-input");
+    const searchBtn = $("#kb-search-btn");
+    if (searchInput) {
+      searchInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") doKnowledgeSearch();
+      });
+    }
+    if (searchBtn) searchBtn.addEventListener("click", doKnowledgeSearch);
+    $$(".kb-filter-chips .chip").forEach((chip) => {
+      chip.addEventListener("click", () => {
+        state.knowledgeFilter = chip.dataset.filter;
+        $$(".kb-filter-chips .chip").forEach((c) => c.classList.remove("active"));
+        chip.classList.add("active");
+        renderKnowledgeDocs();
+      });
+    });
+  }
+
+  async function loadKnowledgeBase() {
+    if (CONFIG.DEMO_MODE) {
+      state.knowledgeDocuments = demoKnowledgeDocuments();
+      renderKnowledgeDocs();
+      setConnStatus("offline", "GitHub Pages · 演示模式");
+      return;
+    }
+    try {
+      const docs = await API.knowledgeDocuments();
+      state.knowledgeDocuments = Array.isArray(docs) ? docs : (docs.documents || []);
+      renderKnowledgeDocs();
+      setConnStatus("online", "已连接后端");
+    } catch (e) {
+      if (isConnectionError(e)) {
+        setConnStatus("offline", "后端未连接");
+        state.knowledgeDocuments = demoKnowledgeDocuments();
+        renderKnowledgeDocs();
+        toast("warn", "使用演示数据", "后端未连接，已加载演示法规文档");
+      } else {
+        toast("error", "加载失败", e.message);
+      }
+    }
+  }
+
+  async function doKnowledgeSearch() {
+    const input = $("#kb-search-input");
+    if (!input) return;
+    const q = input.value.trim();
+    state.knowledgeSearchQuery = q;
+
+    const grid = $("#kb-doc-grid");
+    if (grid) grid.innerHTML = `<div class="skeleton sk-block" style="height:80px"></div>`;
+
+    if (CONFIG.DEMO_MODE || !q) {
+      renderKnowledgeDocs();
+      return;
+    }
+    try {
+      const results = await API.knowledgeSearch(q);
+      state.knowledgeDocuments = Array.isArray(results) ? results : (results.documents || []);
+      renderKnowledgeDocs();
+    } catch (e) {
+      if (isConnectionError(e)) {
+        toast("warn", "后端未连接", "使用本地搜索");
+        renderKnowledgeDocs();
+      } else {
+        toast("error", "搜索失败", e.message);
+      }
+    }
+  }
+
+  function renderKnowledgeDocs() {
+    const el = $("#kb-doc-grid");
+    if (!el) return;
+    let docs = state.knowledgeDocuments || [];
+    // filter by country
+    if (state.knowledgeFilter !== "all") {
+      docs = docs.filter((d) => (d.country || "").toUpperCase() === state.knowledgeFilter);
+    }
+    // filter by search query
+    const q = (state.knowledgeSearchQuery || "").toLowerCase();
+    if (q) {
+      docs = docs.filter((d) =>
+        (d.title || "").toLowerCase().includes(q) ||
+        (d.summary || "").toLowerCase().includes(q) ||
+        (d.category || "").toLowerCase().includes(q)
+      );
+    }
+
+    if (!docs.length) {
+      el.innerHTML = `<div class="empty-state" style="grid-column:1/-1"><div class="es-title">未找到相关文档</div><div class="es-desc">尝试更换关键词或筛选条件</div></div>`;
+      return;
+    }
+    el.innerHTML = docs.map((d) => `
+      <div class="kb-doc-card">
+        <div class="kb-doc-head">
+          <span class="kb-doc-country ${esc(d.country || "Global")}">${esc(d.country || "Global")}</span>
+          <span class="kb-doc-category">${esc(d.category || "")}</span>
+        </div>
+        <div class="kb-doc-title">${esc(d.title)}</div>
+        <div class="kb-doc-summary">${esc(d.summary || "")}</div>
+        <a class="kb-doc-link" href="${esc(d.url || "#")}" target="_blank" rel="noopener">
+          查看原文 ${iconExternal()}
+        </a>
+      </div>`).join("");
+  }
+
+  function demoKnowledgeDocuments() {
+    return [
+      { id: 1, title: "欧盟 CE 认证指令汇总", country: "EU", category: "认证合规", summary: "涵盖低电压指令(LVD 2014/35/EU)、电磁兼容指令(EMC 2014/30/EU)、无线电设备指令(RED 2014/53/EU)等核心 CE 认证要求与测试标准。", url: "#" },
+      { id: 2, title: "美国 FCC 无线设备认证指南", country: "US", category: "通信认证", summary: "FCC Part 15B/C/E 规定的无线设备认证流程、SAR 测试要求、FCC ID 申请步骤与产品标签规范详解。", url: "#" },
+      { id: 3, title: "日本 PSE 电气产品安全认证", country: "JP", category: "产品安全", summary: "日本电气用品安全法(DENLAW)规定的 PSE 认证范围，菱形 PSE（强制）与圆形 PSE（自愿）标志区别及申请流程。", url: "#" },
+      { id: 4, title: "韩国 KC 认证制度详解", country: "KR", category: "认证合规", summary: "韩国知识经济部推行的 KC 认证体系，涵盖 EMC、安全、无线通信等品类认证要求与测试标准。", url: "#" },
+      { id: 5, title: "欧盟 GPSR 通用产品安全条例", country: "EU", category: "产品安全", summary: "2024年12月13日生效的通用产品安全条例(GPSR)，对在线销售产品的安全要求、责任人指定与事故报告机制。", url: "#" },
+      { id: 6, title: "WTO 跨境电商关税协定框架", country: "Global", category: "关税政策", summary: "世界贸易组织关于跨境电子商务的多边协定框架，涉及低值免税额度调整、数字贸易规则与争端解决机制。", url: "#" },
+      { id: 7, title: "美国 Section 301 关税加征清单", country: "US", category: "关税政策", summary: "针对中国商品的第301条款关税加征清单，包含四轮加征清单覆盖范围、豁免申请机制与最新豁免延期公告。", url: "#" },
+      { id: 8, title: "日本食品卫生法进口要求", country: "JP", category: "食品合规", summary: "日本食品卫生法对进口食品、食品容器及包装材料的检验登记要求，包含厚生劳动省指定检测机构名录。", url: "#" },
+    ];
+  }
+
+  /* ============================================================
      侧边栏预算 & 交互
      ============================================================ */
   function updateSidebarBudget(used, total, pct) {
@@ -1804,6 +2638,15 @@ wscat -c ${CONFIG.WS_BASE}/ws?task_id={task_id}`;
   function iconModel() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>`; }
   function iconBook() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>`; }
   function iconCode() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>`; }
+  function iconChat() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`; }
+  function iconShield() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`; }
+  function iconBookOpen() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>`; }
+  function iconSearch() { return `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`; }
+  function iconAlert() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`; }
+  function iconAlertDanger() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>`; }
+  function iconAlertWarn() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`; }
+  function iconAlertInfo() { return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`; }
+  function iconExternal() { return `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`; }
 
   /* ============================================================
      工具

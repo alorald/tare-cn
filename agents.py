@@ -812,7 +812,279 @@ class OrchestratorAgent:
 
 
 # ===========================================================================
+# Agent 4: ComplianceConsultationAgent — 跨境合规咨询
+# ===========================================================================
+
+class ComplianceConsultationAgent:
+    """跨境合规咨询 Agent
+
+    参考 ASTRA 跨境合规智能体，基于 zai-org/GLM-5-FP8 多语种能力，
+    根据用户问题、产品信息与目标国家，生成 HS 编码、税率、
+    认证要求与合规建议。
+
+    工作流：
+      1. 接收用户合规咨询问题、产品信息、目标国家
+      2. 调用 zai-org/GLM-5-FP8（agent_type=consultation）
+      3. 用 _safe_json_parse 解析返回的结构化 JSON
+    """
+
+    name = "ComplianceConsultationAgent"
+    description = "跨境合规咨询 Agent（GLM-5-FP8，HS 编码 / 税率 / 认证 / 合规建议）"
+
+    CONSULT_PROMPT_TEMPLATE = """你是一名资深的跨境合规专家，精通全球主要市场（欧盟、美国、英国、日本、韩国、东南亚、中东等）的进出口法规、HS 编码归类、关税与间接税（VAT/GST/Sales Tax/消费税）、产品认证（CE/FCC/PSE/KC 等）以及平台合规政策。
+
+请根据以下信息，给出专业的跨境合规咨询结论：
+
+【用户咨询问题】
+{query}
+
+【目标国家/地区】{target_country}
+
+【产品信息】
+{product_info}
+
+请严格按以下 JSON 结构返回（不要输出 JSON 以外的任何内容）：
+{{
+  "hs_code": "建议的 HS 编码（6-10 位），若产品信息不足请给出最可能的归类并说明",
+  "hs_description": "HS 编码对应的商品描述",
+  "tax_rate": {{
+    "customs_duty": "进口关税税率（如 5%）",
+    "vat_or_gst": "目标国增值税/GST 税率（如 EU 20%）",
+    "sales_tax": "销售税税率（适用美国时，如 7.25%）",
+    "other": "其他适用税费（如消费税、反倾销税），无则填 null"
+  }},
+  "certifications": [
+    {{
+      "name": "认证名称（如 CE / FCC / PSE / KC / UKCA）",
+      "mandatory": true,
+      "description": "认证适用范围与必要性说明",
+      "authority": "发证机构或监管机关"
+    }}
+  ],
+  "compliance_advice": "面向卖家的合规建议（中文，200-400 字，覆盖清关、税务、标签、知识产权等）",
+  "risk_flags": [
+    {{
+      "level": "red/yellow/blue",
+      "title": "风险标题",
+      "detail": "风险详细说明"
+    }}
+  ]
+}}
+
+只返回 JSON。"""
+
+    async def consult(
+        self,
+        query: str,
+        target_country: str,
+        product_info: str = "",
+    ) -> Dict[str, Any]:
+        """跨境合规咨询
+
+        Args:
+            query: 用户合规咨询问题
+            target_country: 目标国家/地区代码（如 US/EU/JP/KR/GB）
+            product_info: 产品信息描述（可选）
+
+        Returns:
+            结构化合规咨询结果，consultation 字段含
+            hs_code / tax_rate / certifications /
+            compliance_advice / risk_flags
+        """
+        result: Dict[str, Any] = {
+            "agent": self.name,
+            "query": query,
+            "target_country": target_country,
+            "product_info": product_info,
+            "consultation": None,
+            "usage": None,
+            "model": "zai-org/GLM-5-FP8",
+            "errors": [],
+        }
+
+        try:
+            consult_prompt = self.CONSULT_PROMPT_TEMPLATE.format(
+                query=query,
+                target_country=target_country,
+                product_info=product_info or "（用户未提供产品信息，请基于问题进行一般性合规分析）",
+            )
+            resp = await gmi_client.call_agent(
+                agent_type="consultation",
+                input_data={
+                    "system": "你是跨境合规咨询专家，熟悉全球贸易法规与认证体系，只返回 JSON。",
+                    "prompt": consult_prompt,
+                    "temperature": 0.3,
+                },
+            )
+            content = resp.get("content", "")
+            consultation = _safe_json_parse(content)
+            if consultation is None:
+                consultation = {
+                    "raw_text": content,
+                    "_parse_warning": "GLM-5 未返回标准 JSON",
+                    "hs_code": None,
+                    "tax_rate": None,
+                    "certifications": [],
+                    "compliance_advice": content,
+                    "risk_flags": [],
+                }
+            result["consultation"] = consultation
+            result["usage"] = resp.get("usage")
+        except Exception as exc:
+            logger.exception("ComplianceConsultationAgent.consult 失败")
+            result["errors"].append(str(exc))
+            result["consultation"] = None
+
+        return result
+
+
+# ===========================================================================
+# Agent 5: RiskAssessmentAgent — 跨境合规风险评估
+# ===========================================================================
+
+class RiskAssessmentAgent:
+    """跨境合规风险评估 Agent
+
+    参考 ASTRA 跨境合规智能体，基于 openai/gpt-5 推理能力，
+    对产品信息、目标国家与平台进行合规健康度评估，
+    输出 0-100 健康分、分级告警（red/yellow/blue）、
+    产品扫描结果与整改建议。
+
+    工作流：
+      1. 接收产品信息、目标国家、平台
+      2. 调用 openai/gpt-5（agent_type=compliance_decision）进行风险评估
+      3. 用 _safe_json_parse 解析返回的结构化 JSON
+    """
+
+    name = "RiskAssessmentAgent"
+    description = "跨境合规风险评估 Agent（gpt-5，健康分 / 分级告警 / 产品扫描 / 整改建议）"
+
+    ASSESS_PROMPT_TEMPLATE = """你是一名跨境合规风险评估专家，熟悉亚马逊、eBay、Shopify、Temu、速卖通等平台合规规则，以及欧盟、美国、英国、日本、韩国等主要市场的产品安全、标签、认证、违禁品法规。
+
+请基于以下输入，对该产品在目标市场与平台的合规状况进行风险评估：
+
+【产品信息】
+{product_info}
+
+【目标国家/地区】{target_country}
+
+【销售平台】{platform}
+
+请从以下维度扫描并评估：
+1. 违禁关键词（如医疗器械声明、绝对化用词、平台禁售词）
+2. 标签问题（如缺少原产地、成分、警告语、CE 标识）
+3. 认证缺失（如目标国强制认证未取得）
+4. 税务合规（如 VAT 注册、销售税 nexus）
+5. 知识产权与广告合规
+
+请严格按以下 JSON 结构返回（不要输出 JSON 以外的任何内容）：
+{{
+  "health_score": 0-100 之间的整数，100 表示完全合规，0 表示极高风险,
+  "risk_level": "low / medium / high 三选一",
+  "alerts": [
+    {{
+      "level": "red / yellow / blue 三选一（red=必须立即处理，yellow=需限期整改，blue=提示性建议）",
+      "title": "告警标题",
+      "description": "告警详细说明",
+      "recommendation": "具体整改建议"
+    }}
+  ],
+  "product_scan": {{
+    "restricted_keywords": [
+      {{"keyword": "违禁词", "reason": "判定原因", "severity": "red/yellow/blue"}}
+    ],
+    "labeling_issues": [
+      {{"issue": "标签问题描述", "missing_element": "缺失的标签要素", "severity": "red/yellow/blue"}}
+    ],
+    "certification_gaps": [
+      {{"certification": "缺失的认证名称", "required_by": "要求的法规/平台", "severity": "red/yellow/blue"}}
+    ]
+  }},
+  "corrective_actions": [
+    {{
+      "priority": "high / medium / low",
+      "action": "整改行动项",
+      "owner": "建议负责方（如运营/法务/供应链）",
+      "eta_days": "建议完成天数（整数）"
+    }}
+  ]
+}}
+
+只返回 JSON。"""
+
+    async def assess(
+        self,
+        product_info: str,
+        target_country: str,
+        platform: str = "amazon",
+    ) -> Dict[str, Any]:
+        """执行跨境合规风险评估
+
+        Args:
+            product_info: 产品信息描述
+            target_country: 目标国家/地区代码
+            platform: 销售平台（默认 amazon）
+
+        Returns:
+            结构化风险评估结果，assessment 字段含
+            health_score / risk_level / alerts /
+            product_scan / corrective_actions
+        """
+        result: Dict[str, Any] = {
+            "agent": self.name,
+            "product_info": product_info,
+            "target_country": target_country,
+            "platform": platform,
+            "assessment": None,
+            "usage": None,
+            "model": "openai/gpt-5",
+            "errors": [],
+        }
+
+        try:
+            assess_prompt = self.ASSESS_PROMPT_TEMPLATE.format(
+                product_info=product_info,
+                target_country=target_country,
+                platform=platform,
+            )
+            resp = await gmi_client.call_agent(
+                agent_type="compliance_decision",
+                input_data={
+                    "system": "你是跨境合规风险评估专家，只返回 JSON。",
+                    "prompt": assess_prompt,
+                    "temperature": 0.3,
+                },
+            )
+            content = resp.get("content", "")
+            assessment = _safe_json_parse(content)
+            if assessment is None:
+                assessment = {
+                    "raw_text": content,
+                    "_parse_warning": "gpt-5 未返回标准 JSON",
+                    "health_score": 0,
+                    "risk_level": "unknown",
+                    "alerts": [],
+                    "product_scan": {
+                        "restricted_keywords": [],
+                        "labeling_issues": [],
+                        "certification_gaps": [],
+                    },
+                    "corrective_actions": [],
+                }
+            result["assessment"] = assessment
+            result["usage"] = resp.get("usage")
+        except Exception as exc:
+            logger.exception("RiskAssessmentAgent.assess 失败")
+            result["errors"].append(str(exc))
+            result["assessment"] = None
+
+        return result
+
+
+# ===========================================================================
 # 全局实例
 # ===========================================================================
 
 orchestrator = OrchestratorAgent()
+consultation_agent = ComplianceConsultationAgent()
+risk_agent = RiskAssessmentAgent()

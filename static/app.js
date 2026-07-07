@@ -6,10 +6,13 @@
   "use strict";
 
   /* ---------- 配置 ---------- */
+  // 检测是否运行在 GitHub Pages（无后端环境）
+  const IS_GITHUB_PAGES = window.location.hostname.includes("github.io");
   const CONFIG = {
-    API_BASE: "http://localhost:8080",
-    WS_BASE: "ws://localhost:8080",
+    API_BASE: IS_GITHUB_PAGES ? "" : "http://localhost:8080",
+    WS_BASE: IS_GITHUB_PAGES ? "" : "ws://localhost:8080",
     TOAST_TIMEOUT: 4200,
+    DEMO_MODE: IS_GITHUB_PAGES, // GitHub Pages 上自动启用演示模式
   };
 
   /* 工作流步骤定义 */
@@ -666,6 +669,15 @@
     state.taskStartTime = Date.now();
     WORKFLOW_STEPS.forEach((s) => { state.taskSteps[s.key] = { status: "pending" }; });
     renderWorkflowArea();
+
+    // 演示模式：直接运行本地模拟工作流
+    if (CONFIG.DEMO_MODE) {
+      toast("info", "演示模式", "GitHub Pages 演示环境，运行模拟工作流");
+      demoWorkflow();
+      btn.disabled = false;
+      btn.innerHTML = `${iconBolt(18)} 一键触发智能体`;
+      return;
+    }
 
     const payload = {
       task_type: "receipt_compliance",
@@ -1804,6 +1816,12 @@ wscat -c ${CONFIG.WS_BASE}/ws?task_id={task_id}`;
   function init() {
     bindLayout();
     router();
+    if (CONFIG.DEMO_MODE) {
+      // GitHub Pages 演示模式：不连接后端，使用演示数据
+      setConnStatus("offline", "GitHub Pages · 演示模式");
+      updateSidebarBudget(0.0036, 50, 0.0072);
+      return;
+    }
     // 探测后端连接
     API.dashboard().then((d) => {
       setConnStatus("online", "已连接后端");

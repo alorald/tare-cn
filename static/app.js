@@ -121,6 +121,8 @@
 
   function fmtMoney(n) {
     const v = Number(n || 0);
+    // 小额消耗（<$0.01）显示 4 位小数，避免显示 $0.00 误导用户
+    if (v > 0 && v < 0.01) return "$" + v.toFixed(4);
     return "$" + v.toFixed(2);
   }
   function fmtNum(n) {
@@ -245,6 +247,8 @@
     gmiStatus: () => api("/api/gmi/status"),
     complianceChat: (body) => api("/api/compliance/chat", { method: "POST", body }),
     riskAssess: (body) => api("/api/compliance/risk-assess", { method: "POST", body }),
+    riskScore: () => api("/api/compliance/risk-score"),
+    riskAlerts: () => api("/api/compliance/alerts"),
     knowledgeDocuments: () => api("/api/knowledge/documents"),
     knowledgeSearch: (q) => api("/api/knowledge/search?q=" + encodeURIComponent(q)),
   };
@@ -413,10 +417,10 @@
 
     // 统计卡片
     const ts = data.task_stats || {};
-    const tb = data.token_budget || {};
-    const budgetUsed = Number(tb.used || 0);
-    const budgetTotal = Number(tb.total || 50);
-    const budgetPct = tb.percentage != null ? tb.percentage : (budgetTotal ? (budgetUsed / budgetTotal) * 100 : 0);
+    const tb = (data.gmi && data.gmi.token_budget) || data.token_budget || {};
+    const budgetUsed = Number(tb.consumed != null ? tb.consumed : tb.used || 0);
+    const budgetTotal = Number(tb.initial != null ? tb.initial : tb.total || 50);
+    const budgetPct = tb.consumed_percent != null ? tb.consumed_percent : (tb.percentage != null ? tb.percentage : (budgetTotal ? (budgetUsed / budgetTotal) * 100 : 0));
     updateSidebarBudget(budgetUsed, budgetTotal, budgetPct);
 
     const stats = [
@@ -2027,6 +2031,7 @@ wscat -c ${CONFIG.WS_BASE}/ws?task_id={task_id}`;
         result: resp.result || (resp.hs_code ? resp : null),
       });
       renderChatMessages();
+      refreshTokenBudget();
     } catch (e) {
       const typingEl = $("#chat-typing");
       if (typingEl) typingEl.remove();
@@ -2212,7 +2217,7 @@ wscat -c ${CONFIG.WS_BASE}/ws?task_id={task_id}`;
       return;
     }
     try {
-      const data = await API.riskAssess({ action: "status" });
+      const data = await API.riskScore();
       state.riskHealthScore = data.health_score || 0;
       state.riskAlerts = data.alerts || [];
       renderRiskGauge(state.riskHealthScore);
@@ -2368,10 +2373,18 @@ wscat -c ${CONFIG.WS_BASE}/ws?task_id={task_id}`;
         await sleep(1000 + Math.random() * 500);
         result = demoRiskScanResult(product, country);
       } else {
-        result = await API.riskAssess({ product_description: product, country: country });
+        result = await API.riskAssess({ product_info: product, target_country: country });
       }
       state.riskScanResult = result;
       renderRiskScanResult(result);
+      refreshTokenBudget();
+      // 风险扫描后刷新健康分和告警
+      if (result.health_score != null) {
+        state.riskHealthScore = result.health_score;
+        state.riskAlerts = result.alerts || [];
+        renderRiskGauge(state.riskHealthScore);
+        renderRiskAlerts(state.riskAlerts);
+      }
     } catch (e) {
       if (isConnectionError(e)) {
         toast("warn", "后端未连接", "使用演示数据展示扫描结果");
@@ -2597,9 +2610,72 @@ wscat -c ${CONFIG.WS_BASE}/ws?task_id={task_id}`;
      侧边栏预算 & 交互
      ============================================================ */
   function updateSidebarBudget(used, total, pct) {
-    $("#sidebar-budget-pct").textContent = "$" + Number(used).toFixed(2);
+    const usedStr = used > 0 && used < 0.01 ? used.toFixed(4) : used.toFixed(2);
+    $("#sidebar-budget-pct").textContent = "$" + usedStr;
     $("#sidebar-budget-bar").style.width = Math.min(pct, 100) + "%";
-    $("#sidebar-budget-text").textContent = `已用 $${used.toFixed(2)} / $${total.toFixed(0)} (${pct.toFixed(1)}%)`;
+    $("#sidebar-budget-text").textContent = `已用 $${usedStr} / $${total.toFixed(0)} (${pct.toFixed(2)}%)`;
+  }
+
+  /**
+   * 实时刷新 Token 预算（GLM / gpt-5 等调用后触发）
+   * - 更新侧边栏预算条
+   * - 若当前在仪表盘页，同步刷新统计卡片与 Agent 表
+   */
+  async function refreshTokenBudget() {
+    try {
+      const d = await API.dashboard();
+      state.dashboard = d;
+      const tb = (d.gmi && d.gmi.token_budget) || d.token_budget || {};
+      const used = Number(tb.consumed != null ? tb.consumed : tb.used || 0);
+      const total = Number(tb.initial != null ? tb.initial : tb.total || 50);
+      const pct = tb.consumed_percent != null ? tb.consumed_percent : (tb.percentage != null ? tb.percentage : (total ? (used / total) * 100 : 0));
+      updateSidebarBudget(used, total, pct);
+
+      // 若仪表盘统计卡片可见，同步刷新 Token 消耗卡片
+      const statsEl = $("#dash-stats");
+      if (statsEl && state.route === "dashboard") {
+        const ts = d.task_stats || {};
+        const cards = [
+          { label: "本月任务总数", value: fmtNum(ts.total), icon: "blue", svg: iconChart(), foot: `<span class="stat-trend up">▲ ${ts.completed || 0} 已完成</span> · ${ts.processing || 0} 处理中` },
+          { label: "已处理票据", value: fmtNum(ts.completed), icon: "green", svg: iconReceipt(), foot: `失败 ${ts.failed || 0} · 成功率 ${ts.total ? Math.round((ts.completed / ts.total) * 100) : 0}%` },
+          { label: "GMI Token 消耗", value: fmtMoney(used) + " / " + fmtMoney(total), icon: "purple", svg: iconBolt(), foot: `<span class="stat-trend ${pct > 80 ? "down" : "up"}">已用 ${pct.toFixed(1)}%</span>` },
+          { label: "平均推理延迟", value: "1.8s", icon: "amber", svg: iconClock(), foot: "P95 3.2s · 赛事额度内" },
+        ];
+        statsEl.innerHTML = cards.map((s) => `
+          <div class="card stat-card">
+            <div class="stat-icon ${s.icon}">${s.svg}</div>
+            <div class="stat-label">${esc(s.label)}</div>
+            <div class="stat-value">${s.value}</div>
+            <div class="stat-foot">${s.foot}</div>
+          </div>`).join("");
+
+        // 同步刷新 Agent 集群表
+        const agents = d.agent_status || [];
+        const agentsEl = $("#dash-agents");
+        if (agentsEl) {
+          agentsEl.innerHTML = `
+            <div class="card-title">Agent 集群状态</div>
+            <div class="table-wrap">
+              <table class="table">
+                <thead><tr><th>Agent</th><th>状态</th><th>待处理</th><th>今日完成</th><th>Token 消耗</th></tr></thead>
+                <tbody>
+                  ${agents.length ? agents.map((a) => `
+                    <tr>
+                      <td><b>${esc(a.name)}</b></td>
+                      <td>${statusBadge(a.status)}</td>
+                      <td class="text-mono">${fmtNum(a.pending)}</td>
+                      <td class="text-mono">${fmtNum(a.completed_today)}</td>
+                      <td class="text-mono">${fmtMoney(a.token_cost)}</td>
+                    </tr>`).join("") : `<tr><td colspan="5" class="text-dim text-center" style="padding:24px">暂无 Agent 数据</td></tr>`}
+                </tbody>
+              </table>
+            </div>`;
+        }
+      }
+    } catch (e) {
+      // 静默失败，不影响主流程
+      console.warn("refreshTokenBudget failed:", e);
+    }
   }
 
   function bindLayout() {
@@ -2668,9 +2744,11 @@ wscat -c ${CONFIG.WS_BASE}/ws?task_id={task_id}`;
     // 探测后端连接
     API.dashboard().then((d) => {
       setConnStatus("online", "已连接后端");
-      const tb = d.token_budget || {};
-      const pct = tb.percentage != null ? tb.percentage : (tb.total ? (tb.used / tb.total) * 100 : 0);
-      updateSidebarBudget(Number(tb.used || 0), Number(tb.total || 50), pct);
+      const tb = (d.gmi && d.gmi.token_budget) || d.token_budget || {};
+      const used = Number(tb.consumed != null ? tb.consumed : tb.used || 0);
+      const total = Number(tb.initial != null ? tb.initial : tb.total || 50);
+      const pct = tb.consumed_percent != null ? tb.consumed_percent : (tb.percentage != null ? tb.percentage : (total ? (used / total) * 100 : 0));
+      updateSidebarBudget(used, total, pct);
     }).catch((e) => {
       if (isConnectionError(e)) setConnStatus("offline", "后端未连接");
       else setConnStatus("offline", "后端异常");

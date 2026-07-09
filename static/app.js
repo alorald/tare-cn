@@ -2682,6 +2682,17 @@ wscat -c ${CONFIG.WS_BASE}/ws?task_id={task_id}`;
     const layout = $(".app-layout");
     $("#sidebar-collapse").addEventListener("click", () => layout.classList.toggle("sidebar-collapsed"));
     $("#menu-toggle").addEventListener("click", () => layout.classList.toggle("sidebar-open"));
+    // 移动端点击遮罩关闭侧边栏
+    const backdrop = $("#sidebar-backdrop");
+    if (backdrop) {
+      backdrop.addEventListener("click", () => layout.classList.remove("sidebar-open"));
+    }
+    // 移动端点击导航项后自动关闭侧边栏
+    document.querySelectorAll(".nav-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        if (window.innerWidth <= 860) layout.classList.remove("sidebar-open");
+      });
+    });
     $("#refresh-btn").addEventListener("click", () => {
       const def = ROUTES[state.route];
       if (def && def.onEnter) {

@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FinFlow Global AaaS — PRD 项目看板</title>
+<style>
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg-primary: #0f172a;
+  --bg-card: #1e293b;
+  --bg-card-hover: #263548;
+  --color-primary: #3b82f6;
+  --color-accent: #f59e0b;
+  --color-success: #10b981;
+  --color-pending: #64748b;
+  --color-text: #e2e8f0;
+  --color-text-secondary: #94a3b8;
+  --color-border: #334155;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--color-text);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 20px 40px;
+}
+
+/* ── Header ── */
+.header {
+  text-align: center;
+  margin-bottom: 36px;
+  padding-bottom: 28px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.header h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-bottom: 10px;
+}
+
+.header h1 span {
+  color: var(--color-primary);
+}
+
+.header-tags {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 22px;
+}
+
+.tag {
+  display: inline-block;
+  padding: 4px 14px;
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+.tag-afac {
+  background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+  color: #fff;
+}
+
+.tag-direction {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--color-accent);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.tag-ai {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--color-success);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+/* ── Overall Progress ── */
+.overall-progress {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.overall-progress-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+  font-size: 0.9rem;
+}
+
+.overall-progress-label .label-text {
+  color: var(--color-text-secondary);
+}
+
+.overall-progress-label .label-value {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--color-accent);
+}
+
+.progress-bar-track {
+  width: 100%;
+  height: 14px;
+  background: rgba(51, 65, 85, 0.6);
+  border-radius: 7px;
+  overflow: hidden;
+  position: relative;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  border-radius: 7px;
+  background: linear-gradient(90deg, #3b82f6, #8b5cf6, #f59e0b);
+  background-size: 200% 100%;
+  animation: shimmer 3s ease infinite;
+  transition: width 0.8s ease;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── Section Title ── */
+.section-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: 16px;
+  padding-left: 12px;
+  border-left: 3px solid var(--color-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+/* ── Grid Layouts ── */
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.grid-6 {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+/* ── Cards ── */
+.card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+
+.card-label {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.card-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--color-text);
+  line-height: 1.2;
+}
+
+.card-value.accent {
+  color: var(--color-accent);
+}
+
+.card-value.primary {
+  color: var(--color-primary);
+}
+
+/* ── Highlight Cards ── */
+.highlight-card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  padding: 22px;
+  border: 1px solid var(--color-border);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.highlight-card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+}
+
+.highlight-card.status-done::before {
+  background: var(--color-success);
+}
+
+.highlight-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+
+.highlight-card .hc-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: var(--color-text);
+}
+
+.highlight-card .hc-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  margin-bottom: 12px;
+}
+
+.hc-status.done {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--color-success);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.highlight-card .hc-desc {
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+/* ── Table ── */
+.table-section {
+  margin-bottom: 36px;
+}
+
+.prd-table-wrapper {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+
+.prd-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.prd-table thead th {
+  background: rgba(51, 65, 85, 0.4);
+  padding: 14px 18px;
+  text-align: left;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.prd-table tbody tr {
+  border-bottom: 1px solid rgba(51, 65, 85, 0.4);
+  transition: background 0.15s ease;
+}
+
+.prd-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.prd-table tbody tr:hover {
+  background: rgba(59, 130, 246, 0.04);
+}
+
+.prd-table td {
+  padding: 14px 18px;
+  font-size: 0.9rem;
+}
+
+/* Priority badges */
+.priority-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.priority-p0 {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.priority-p1 {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.priority-p2 {
+  background: rgba(100, 116, 139, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(100, 116, 139, 0.3);
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 12px;
+  border-radius: 20px;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.status-done {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+
+.status-dev {
+  background: rgba(59, 130, 246, 0.15);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.status-pending {
+  background: rgba(100, 116, 139, 0.15);
+  color: #64748b;
+  border: 1px solid rgba(100, 116, 139, 0.25);
+}
+
+/* Inline progress bar */
+.inline-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inline-progress-bar {
+  flex: 1;
+  height: 8px;
+  min-width: 80px;
+  background: rgba(51, 65, 85, 0.5);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.inline-progress-fill {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.6s ease;
+}
+
+.inline-progress-fill.fill-100 {
+  background: linear-gradient(90deg, #10b981, #34d399);
+}
+
+.inline-progress-fill.fill-0 {
+  background: #475569;
+}
+
+.inline-progress-fill.fill-partial {
+  background: linear-gradient(90deg, #3b82f6, #60a5fa);
+}
+
+.inline-progress-text {
+  font-size: 0.85rem;
+  font-weight: 600;
+  min-width: 42px;
+  text-align: right;
+  color: var(--color-text);
+}
+
+/* ── Footer ── */
+.footer {
+  text-align: center;
+  padding-top: 28px;
+  border-top: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+}
+
+.footer-links {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.footer-links a {
+  color: var(--color-primary);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.2s ease;
+}
+
+.footer-links a:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+.footer-date {
+  font-size: 0.78rem;
+  color: var(--color-pending);
+}
+
+/* ── Responsive ── */
+@media (max-width: 1024px) {
+  .grid-6 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .container {
+    padding: 16px 14px 32px;
+  }
+
+  .header h1 {
+    font-size: 1.3rem;
+  }
+
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+
+  .grid-6 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .prd-table thead th,
+  .prd-table td {
+    padding: 10px 12px;
+    font-size: 0.82rem;
+  }
+
+  .card-value {
+    font-size: 1.3rem;
+  }
+
+  .table-scroll {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .table-scroll .prd-table {
+    min-width: 600px;
+  }
+}
+
+@media (max-width: 480px) {
+  .grid-6 {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .header-tags {
+    gap: 6px;
+  }
+
+  .tag {
+    font-size: 0.72rem;
+    padding: 3px 10px;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+
+  <!-- ── Header ── -->
+  <header class="header">
+    <h1>FinFlow Global <span>AaaS</span> — PRD 项目看板</h1>
+    <div class="header-tags">
+      <span class="tag tag-afac">AFAC 2026</span>
+      <span class="tag tag-direction">方向四</span>
+      <span class="tag tag-ai">Agentic AI</span>
+    </div>
+    <div class="overall-progress">
+      <div class="overall-progress-label">
+        <span class="label-text">P0 功能完成度</span>
+        <span class="label-value">100%</span>
+      </div>
+      <div class="progress-bar-track">
+        <div class="progress-bar-fill" style="width: 100%;"></div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── 差异化亮点 ── -->
+  <h2 class="section-title">差异化亮点</h2>
+  <div class="grid-3">
+
+    <div class="highlight-card status-done">
+      <div class="hc-title">跨境场景垂直性</div>
+      <div class="hc-status done">&#10003; 已完成</div>
+      <div class="hc-desc">5 个 Agent 覆盖完整合规链路，涵盖发票识别、多币种核算、跨境税务、汇率对冲、合规审查全流程。</div>
+    </div>
+
+    <div class="highlight-card status-done">
+      <div class="hc-title">多模型编排降本</div>
+      <div class="hc-status done">&#10003; 已完成</div>
+      <div class="hc-desc">单次任务成本低至 $0.0018，以 $50 预算可完成约 28,000 次任务，实现极致性价比。</div>
+    </div>
+
+    <div class="highlight-card status-done">
+      <div class="hc-title">知识库驱动合规</div>
+      <div class="hc-status done">&#10003; 已完成</div>
+      <div class="hc-desc">29 份专业知识文档，覆盖 15+ 个国家和地区的财税法规，确保合规咨询准确性。</div>
+    </div>
+
+  </div>
+
+  <!-- ── 技术指标 ── -->
+  <h2 class="section-title">技术指标</h2>
+  <div class="grid-6">
+
+    <div class="card">
+      <div class="card-label">Agent 数量</div>
+      <div class="card-value primary">5 个</div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">模型数量</div>
+      <div class="card-value primary">7 个</div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">知识库文档</div>
+      <div class="card-value">29 份</div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">API 端点</div>
+      <div class="card-value">17 个</div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">前端页面</div>
+      <div class="card-value">9 个</div>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Token 单次成本</div>
+      <div class="card-value accent">$0.0018</div>
+    </div>
+
+  </div>
+
+  <!-- ── PRD 功能模块完成度 ── -->
+  <h2 class="section-title">PRD 功能模块完成度</h2>
+  <div class="table-section">
+    <div class="prd-table-wrapper">
+      <div class="table-scroll">
+        <table class="prd-table">
+          <thead>
+            <tr>
+              <th style="width: 25%;">功能模块</th>
+              <th style="width: 12%;">优先级</th>
+              <th style="width: 40%;">完成度</th>
+              <th style="width: 23%;">状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>总览仪表盘</td>
+              <td><span class="priority-badge priority-p0">P0</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-100" style="width: 100%;"></div>
+                  </div>
+                  <span class="inline-progress-text">100%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-done">&#10003; 已完成</span></td>
+            </tr>
+            <tr>
+              <td>票据中心</td>
+              <td><span class="priority-badge priority-p0">P0</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-100" style="width: 100%;"></div>
+                  </div>
+                  <span class="inline-progress-text">100%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-done">&#10003; 已完成</span></td>
+            </tr>
+            <tr>
+              <td>Agent 集群</td>
+              <td><span class="priority-badge priority-p0">P0</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-100" style="width: 100%;"></div>
+                  </div>
+                  <span class="inline-progress-text">100%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-done">&#10003; 已完成</span></td>
+            </tr>
+            <tr>
+              <td>财税报表</td>
+              <td><span class="priority-badge priority-p0">P0</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-100" style="width: 100%;"></div>
+                  </div>
+                  <span class="inline-progress-text">100%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-done">&#10003; 已完成</span></td>
+            </tr>
+            <tr>
+              <td>GMI 监控</td>
+              <td><span class="priority-badge priority-p0">P0</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-100" style="width: 100%;"></div>
+                  </div>
+                  <span class="inline-progress-text">100%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-done">&#10003; 已完成</span></td>
+            </tr>
+            <tr>
+              <td>API 文档</td>
+              <td><span class="priority-badge priority-p0">P0</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-100" style="width: 100%;"></div>
+                  </div>
+                  <span class="inline-progress-text">100%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-done">&#10003; 已完成</span></td>
+            </tr>
+            <tr>
+              <td>合规咨询</td>
+              <td><span class="priority-badge priority-p1">P1</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-100" style="width: 100%;"></div>
+                  </div>
+                  <span class="inline-progress-text">100%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-done">&#10003; 已完成</span></td>
+            </tr>
+            <tr>
+              <td>风险评估</td>
+              <td><span class="priority-badge priority-p1">P1</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-100" style="width: 100%;"></div>
+                  </div>
+                  <span class="inline-progress-text">100%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-done">&#10003; 已完成</span></td>
+            </tr>
+            <tr>
+              <td>知识库</td>
+              <td><span class="priority-badge priority-p1">P1</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-100" style="width: 100%;"></div>
+                  </div>
+                  <span class="inline-progress-text">100%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-done">&#10003; 已完成</span></td>
+            </tr>
+            <tr>
+              <td>多票据批量上传</td>
+              <td><span class="priority-badge priority-p2">P2</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-0" style="width: 0%;"></div>
+                  </div>
+                  <span class="inline-progress-text">0%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-pending">待开发</span></td>
+            </tr>
+            <tr>
+              <td>历史记录与导出</td>
+              <td><span class="priority-badge priority-p2">P2</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-0" style="width: 0%;"></div>
+                  </div>
+                  <span class="inline-progress-text">0%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-pending">待开发</span></td>
+            </tr>
+            <tr>
+              <td>多租户管理</td>
+              <td><span class="priority-badge priority-p2">P2</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-0" style="width: 0%;"></div>
+                  </div>
+                  <span class="inline-progress-text">0%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-pending">待开发</span></td>
+            </tr>
+            <tr>
+              <td>Webhook 事件推送</td>
+              <td><span class="priority-badge priority-p2">P2</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-0" style="width: 0%;"></div>
+                  </div>
+                  <span class="inline-progress-text">0%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-pending">待开发</span></td>
+            </tr>
+            <tr>
+              <td>多语言界面切换</td>
+              <td><span class="priority-badge priority-p2">P2</span></td>
+              <td>
+                <div class="inline-progress">
+                  <div class="inline-progress-bar">
+                    <div class="inline-progress-fill fill-0" style="width: 0%;"></div>
+                  </div>
+                  <span class="inline-progress-text">0%</span>
+                </div>
+              </td>
+              <td><span class="status-badge status-pending">待开发</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Footer ── -->
+  <footer class="footer">
+    <div class="footer-links">
+      <a href="https://alorald.github.io/tare-cn/" target="_blank" rel="noopener noreferrer">&#127760; 公网演示地址</a>
+      <a href="https://github.com/alorald/tare-cn" target="_blank" rel="noopener noreferrer">&#128187; GitHub 仓库</a>
+    </div>
+    <div class="footer-date">更新日期：2026-07-15</div>
+  </footer>
+
+</div>
+
+</body>
+</html>
